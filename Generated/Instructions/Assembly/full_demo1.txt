@@ -1,0 +1,51 @@
+# full_demo1.txt
+# 目标：
+# 1) 覆盖全部指令：NOP/ADD/SUB/AND/OR/XOR/ADDI/ANDI/ORI/LW/SW/BEQ/BNE/JAL/JALR
+# 2) 程序可终止（不会进入死循环）
+
+start:
+    NOP
+
+    # 准备数据
+    ADDI    x10, x0, 0          # base addr = 0
+    ADDI    x11, x0, 5
+    ADDI    x12, x0, 7
+
+    # Store / Load
+    SW      x11, 0(x10)
+    SW      x12, 4(x10)
+    LW      x13, 0(x10)
+    LW      x14, 4(x10)
+
+    # R-type ALU
+    ADD     x15, x13, x14
+    SUB     x16, x14, x13
+    AND     x17, x13, x14
+    OR      x18, x13, x14
+    XOR     x19, x13, x14
+
+    # I-type ALU
+    ANDI    x20, x15, 0x0F
+    ORI     x21, x16, 0x01
+
+    # Branch（确定性：x11=5, x12=7）
+    BEQ     x11, x12, beq_taken     # 不会跳
+    ADDI    x22, x0, 123            # 会执行
+
+beq_taken:
+    BNE     x11, x12, bne_taken     # 会跳
+    ADDI    x23, x0, 999            # 不会执行
+
+bne_taken:
+    # 调用子程序，返回后继续执行
+    JAL     x1, func_call
+    ADDI    x24, x0, 42
+    JAL     x0, done                # 无条件跳到 done
+
+func_call:
+    ADDI    x25, x0, 1
+    ADD     x26, x20, x25
+    JALR    x0, 0(x1)               # 返回到 JAL 后一条
+
+done:
+    NOP
