@@ -4,7 +4,9 @@
 
 #include "cpu.h"
 #include "../DebugTools/printer.h"
+#include "../Statistics/statistics.h"
 #include <cassert>
+#include <iostream>
 
 CPU::CPU() {
     reset();
@@ -18,11 +20,13 @@ void CPU::reset() {
     current_register = RegisterFile{};
     next_register = RegisterFile{};
     halted = false;
+    trace_enabled = true;
     cycles = 0;
 
     next_pc = current_pc;
     next_pipeline = current_pipeline;
     next_register = current_register;
+    stat.reset();
 }
 
 void CPU::tick() {
@@ -41,6 +45,24 @@ void CPU::tick() {
     current_pc = next_pc;
     current_pipeline = next_pipeline;
     current_register = next_register;
+    memory.setDebugContext(cycles + 1, current_pc);
+
+    stat.onCycle();
+    if (!halted) {
+        stat.onIfBusyCycles();
+    }
+    if (current_pipeline.if_id.valid) {
+        stat.onIdBusyCycles();
+    }
+    if (current_pipeline.id_ex.valid) {
+        stat.onExBusyCycles();
+    }
+    if (current_pipeline.ex_mem.valid) {
+        stat.onMemBusyCycles();
+    }
+    if (current_pipeline.mem_wb.valid) {
+        stat.onWbBusyCycles();
+    }
 
     fetch_stage();
     decode_stage();
@@ -52,7 +74,9 @@ void CPU::tick() {
 
     cycles++;
 
-    print_cycle_trace(cycles, current_pc, halted, current_pipeline, current_register);
+    if (trace_enabled) {
+        print_cycle_trace(cycles, current_pc, halted, current_pipeline, current_register);
+    }
 }
 
 void CPU::run() {
@@ -68,6 +92,8 @@ void CPU::run() {
         tick();
     }
     print_final_registers(cycles, current_register);
+    print_statistics(stat);
+    memory.printWatchpointValues(std::cout);
 }
 
 void CPU::setProgram(std::vector<Instruction>& program, u32 init_pc) {
@@ -81,6 +107,35 @@ void CPU::setProgram(std::vector<Instruction>& program, u32 init_pc) {
 
     this->halted = false;
     this->cycles = 0;
+    stat.reset();
+}
+
+void CPU::setTrace(bool enable) {
+    trace_enabled = enable;
+}
+
+void CPU::setMemoryTrace(bool enable) {
+    memory.setTrace(enable);
+}
+
+void CPU::addMemoryWatchpoint(u32 addr) {
+    memory.addWatchpoint(addr);
+}
+
+void CPU::clearMemoryWatchpoints() {
+    memory.clearWatchpoints();
+}
+
+void CPU::clearMemoryAccessLog() {
+    memory.clearAccessLog();
+}
+
+void CPU::printMemoryAccessLog(const std::size_t max_entries) const {
+    memory.printAccessLog(std::cout, max_entries);
+}
+
+void CPU::dumpMemory(u32 start, u32 len) const {
+    memory.dumpBytes(start, len, std::cout);
 }
 
 void CPU::fetch_stage() {
@@ -173,9 +228,22 @@ void CPU::decode_stage() {
         return false;
     };
 
-    const bool stall = (uses_rs1(inst.op) && has_conflict(inst.rs1)) || (uses_rs2(inst.op) && has_conflict(inst.rs2));
+    const bool rs1_conflict = uses_rs1(inst.op) && has_conflict(inst.rs1);
+    const bool rs2_conflict = uses_rs2(inst.op) && has_conflict(inst.rs2);
+    const bool stall = rs1_conflict || rs2_conflict;
+
+    const bool load_use_hazard =
+        current_pipeline.id_ex.valid &&
+        current_pipeline.id_ex.ctrl.mem_read &&
+        current_pipeline.id_ex.inst.rd != 0 &&
+        ((uses_rs1(inst.op) && current_pipeline.id_ex.inst.rd == inst.rs1) ||
+         (uses_rs2(inst.op) && current_pipeline.id_ex.inst.rd == inst.rs2));
 
     if (stall) {
+        stat.onDataHazardStall();
+        if (load_use_hazard) {
+            stat.onLoadUseHazard();
+        }
         // 插入 bubble，冻结 IF/PC
         next_pipeline.id_ex = ID_EX{};
         next_pipeline.if_id = current_pipeline.if_id;
@@ -344,6 +412,7 @@ void CPU::execute_stage() {
 
     bool take_branch = false;
     if (ctrl.branch) {
+        stat.onBranches();
         switch (inst.op) {
             case RISCV32I::BEQ:
                 take_branch = (id_ex.rs1_value == id_ex.rs2_value);
@@ -353,6 +422,18 @@ void CPU::execute_stage() {
                 break;
             default:
                 break;
+        }
+
+        /*
+        *当前采用的是“固定预测 not-taken（不跳）”。
+        所以在条件分支里：
+            实际结果 take_branch == false：预测正确（not-taken）
+            实际结果 take_branch == true：预测错误（预测不跳，但实际跳了），这就是 branch miss
+        更通用的写法其实是：if (predicted_taken != take_branch) miss++
+        你现在 predicted_taken 恒为 false，所以就退化成了 if (take_branch) miss++
+         */
+        if (take_branch) {
+            stat.onBranchMiss();
         }
     }
 
@@ -389,6 +470,13 @@ void CPU::execute_stage() {
 
     // 分支/跳转成立：改 PC，并冲刷流水线前两级
     if (take_branch || take_jump) {
+        if (next_pipeline.if_id.valid) {
+            stat.onControlHazardStall();
+        }
+        if (next_pipeline.id_ex.valid) {
+            stat.onControlHazardStall();
+        }
+        stat.onBranchFlush();
         halted = false;
         next_pc = target_pc;
         next_pipeline.if_id = IF_ID{};
@@ -410,22 +498,24 @@ void CPU::memory_stage() {
 
     // LW: 按 little-endian 读取 4 字节拼成 32 位
     if (ctrl.mem_read) {
+        stat.onLoads();
         const u32 addr = ex_mem.alu_result;
-        const u32 b0 = static_cast<u32>(memory.load_word(addr));
-        const u32 b1 = static_cast<u32>(memory.load_word(addr + 1));
-        const u32 b2 = static_cast<u32>(memory.load_word(addr + 2));
-        const u32 b3 = static_cast<u32>(memory.load_word(addr + 3));
+        const u32 b0 = static_cast<u32>(memory.load_byte(addr));
+        const u32 b1 = static_cast<u32>(memory.load_byte(addr + 1));
+        const u32 b2 = static_cast<u32>(memory.load_byte(addr + 2));
+        const u32 b3 = static_cast<u32>(memory.load_byte(addr + 3));
         writeback_value = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
     }
 
     // SW: 按 little-endian 拆成 4 字节写入
     if (ctrl.mem_write) {
+        stat.onStores();
         const u32 addr = ex_mem.alu_result;
         const u32 data = ex_mem.rs2_value;
-        memory.store_word(addr,     static_cast<u8>( data        & 0xFF));
-        memory.store_word(addr + 1, static_cast<u8>((data >> 8)  & 0xFF));
-        memory.store_word(addr + 2, static_cast<u8>((data >> 16) & 0xFF));
-        memory.store_word(addr + 3, static_cast<u8>((data >> 24) & 0xFF));
+        memory.store_byte(addr,     static_cast<u8>( data        & 0xFF));
+        memory.store_byte(addr + 1, static_cast<u8>((data >> 8)  & 0xFF));
+        memory.store_byte(addr + 2, static_cast<u8>((data >> 16) & 0xFF));
+        memory.store_byte(addr + 3, static_cast<u8>((data >> 24) & 0xFF));
     }
 
     MEM_WB out{};
@@ -447,6 +537,37 @@ void CPU::writeback_stage() {
 
     const MEM_WB& mem_wb = current_pipeline.mem_wb;
     const ControlSignals& ctrl = mem_wb.ctrl;
+    const Instruction& inst = mem_wb.inst;
+
+    stat.onInstructionRetired();
+    switch (inst.op) {
+        case RISCV32I::ADD:
+        case RISCV32I::SUB:
+        case RISCV32I::AND:
+        case RISCV32I::OR:
+        case RISCV32I::XOR:
+        case RISCV32I::ADDI:
+        case RISCV32I::ANDI:
+        case RISCV32I::ORI:
+            stat.onAluInstructions();
+            break;
+        case RISCV32I::LW:
+            stat.onLoadInstructions();
+            break;
+        case RISCV32I::SW:
+            stat.onStoreInstructions();
+            break;
+        case RISCV32I::BEQ:
+        case RISCV32I::BNE:
+            stat.onBranchInstructions();
+            break;
+        case RISCV32I::JAL:
+        case RISCV32I::JALR:
+            stat.onJumpInstructions();
+            break;
+        case RISCV32I::NOP:
+            break;
+    }
 
     // 只有需要写回的指令才写寄存器，并且禁止写 x0
     if (ctrl.reg_write && mem_wb.rd != 0) {

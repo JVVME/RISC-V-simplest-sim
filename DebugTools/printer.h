@@ -12,6 +12,7 @@
 #include "../ISA/instruction.h"
 #include "../CPU/Pipeline/pipeline.h"
 #include "../CPU/Register/register.h"
+#include "../Statistics/statistics.h"
 
 void print_program(const std::vector<Instruction>& program);
 
@@ -20,3 +21,4 @@ void print_cycle_trace(u64 cycle, u32 pc, bool halted, const Pipeline& pipeline,
 
 // 程序结束打印
 void print_final_registers(u64 total_cycles, const RegisterFile& regfile);
+void print_statistics(const StatisticsManager& stat_manager);

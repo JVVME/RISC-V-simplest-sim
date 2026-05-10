@@ -253,4 +253,45 @@ void print_final_registers(u64 total_cycles, const RegisterFile& regfile) {
     std::cout << std::right;
 }
 
+void print_statistics(const StatisticsManager& stat_manager) {
+    const Statistics& s = stat_manager.snapshot();
+    auto safe_ratio = [](u64 numerator, u64 denominator) -> double {
+        return denominator == 0
+                   ? 0.0
+                   : static_cast<double>(numerator) / static_cast<double>(denominator);
+    };
+
+    std::cout << "\n===== STATISTICS =====\n";
+    std::cout << "cycles               = " << s.cycles << "\n";
+    std::cout << "retired              = " << s.retired << "\n";
+    std::cout << "IPC                  = " << std::fixed << std::setprecision(4) << stat_manager.getIPC() << "\n";
+    std::cout << "CPI                  = " << std::fixed << std::setprecision(4) << stat_manager.getCPI() << "\n";
+
+    std::cout << "data_hazard_stalls   = " << s.data_hazard_stalls << "\n";
+    std::cout << "control_hazard_stalls= " << s.control_hazard_stalls << "\n";
+    std::cout << "structural_hazard_stalls = " << s.structural_hazard_stalls << "\n";
+    std::cout << "load_use_hazards     = " << s.load_use_hazards << "\n";
+    std::cout << "branch_flushes       = " << s.branch_flushes << "\n";
+
+    std::cout << "branches             = " << s.branches << "\n";
+    std::cout << "branch_miss          = " << s.branch_miss << "\n";
+    std::cout << "branch_miss_rate     = " << std::fixed << std::setprecision(4)
+              << safe_ratio(s.branch_miss, s.branches) << "\n";
+
+    std::cout << "loads                = " << s.loads << "\n";
+    std::cout << "stores               = " << s.stores << "\n";
+
+    std::cout << "if_busy_cycles       = " << s.if_busy_cycles << "\n";
+    std::cout << "id_busy_cycles       = " << s.id_busy_cycles << "\n";
+    std::cout << "ex_busy_cycles       = " << s.ex_busy_cycles << "\n";
+    std::cout << "mem_busy_cycles      = " << s.mem_busy_cycles << "\n";
+    std::cout << "wb_busy_cycles       = " << s.wb_busy_cycles << "\n";
+
+    std::cout << "alu_instructions     = " << s.alu_instructions << "\n";
+    std::cout << "load_instructions    = " << s.load_instructions << "\n";
+    std::cout << "store_instructions   = " << s.store_instructions << "\n";
+    std::cout << "branch_instructions  = " << s.branch_instructions << "\n";
+    std::cout << "jump_instructions    = " << s.jump_instructions << "\n";
+}
+
 

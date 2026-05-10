@@ -47,11 +47,39 @@ class StatisticsManager {
 public:
     StatisticsManager();
 
+    void reset();
+    void onCycle();
+    void onInstructionRetired();
+    void onDataHazardStall();
+    void onControlHazardStall();
+    void onStructuralHazardStall();
+    void onBranchFlush();
+    void onLoadUseHazard();
+    void onBranches();
+    void onBranchMiss();
+    void onLoads();
+    void onStores();
+    void onIfBusyCycles();
+    void onIdBusyCycles();
+    void onExBusyCycles();
+    void onMemBusyCycles();
+    void onWbBusyCycles();
+    void onAluInstructions();
+    void onLoadInstructions();
+    void onStoreInstructions();
+    void onBranchInstructions();
+    void onJumpInstructions();
+
+    const Statistics& snapshot() const;
+    double getIPC() const;
+    double getCPI() const;
+
 private:
     Statistics statistics;
 
     double ipc = 0.0;
     double cpi = 0.0;
+    void updateDerived();
 
 };
 

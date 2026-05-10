@@ -10,6 +10,9 @@ int main() {
     print_program(instructions);
 
     CPU cpu;
+    cpu.setMemoryTrace(true);
+    cpu.addMemoryWatchpoint(0x0);
+    cpu.addMemoryWatchpoint(0x4);
     cpu.setProgram(instructions, 0);
     cpu.run();
 

@@ -5,6 +5,7 @@
  */
 
 #pragma once
+#include <cstddef>
 #include "../types.h"
 #include "../Memory/memory.h"
 #include "Pipeline/pipeline.h"
@@ -22,6 +23,12 @@ public:
     void setProgram(std::vector<Instruction>& program, u32 init_pc);
 
     void setTrace(bool enable);
+    void setMemoryTrace(bool enable);
+    void addMemoryWatchpoint(u32 addr);
+    void clearMemoryWatchpoints();
+    void clearMemoryAccessLog();
+    void printMemoryAccessLog(std::size_t max_entries = 0) const;
+    void dumpMemory(u32 start, u32 len) const;
 
 private:
     u32 current_pc;
@@ -38,6 +45,7 @@ private:
     Memory memory;
 
     bool halted;
+    bool trace_enabled;
 
     u64 cycles;
 
