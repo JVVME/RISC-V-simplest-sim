@@ -9,10 +9,10 @@ int main() {
     instructions = parse_assembly_file(path);
     print_program(instructions);
 
-    CPU cpu;
-    cpu.setMemoryTrace(true);
-    cpu.addMemoryWatchpoint(0x0);
-    cpu.addMemoryWatchpoint(0x4);
+    Memory memory;
+    Cache cache(4096, 16, CacheReplacePolicy::LRU, CacheWritePolicy::WriteThrough, &memory);
+    CPU cpu(&cache, &memory);
+
     cpu.setProgram(instructions, 0);
     cpu.run();
 

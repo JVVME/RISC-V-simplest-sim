@@ -20,4 +20,8 @@ add_executable(RISCV_Simulator main.cpp
         CPU/cpu.cpp
         CPU/cpu.h
         Statistics/statistics.cpp
-        Statistics/statistics.h)
+        Statistics/statistics.h
+        CPU/Cache/cache.cpp
+        CPU/Cache/cache.h
+        System.cpp
+        System.h)

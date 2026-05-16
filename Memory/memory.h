@@ -13,6 +13,7 @@
 
 #include "../types.h"
 
+class MemoryInterface;
 class Memory;
 
 struct MemoryAccess {
@@ -24,11 +25,19 @@ struct MemoryAccess {
     u8 value = 0;
 };
 
-class Memory {
+class MemoryInterface {
+public:
+    virtual ~MemoryInterface() = default;
+
+    virtual u8 load_byte(u32 addr) = 0;
+    virtual void store_byte(u32 addr, u8 value) = 0;
+};
+
+class Memory : public MemoryInterface {
 public:
     Memory();
-    u8 load_byte(u32 addr);
-    void store_byte(u32 addr, u8 value);
+    u8 load_byte(u32 addr) override;
+    void store_byte(u32 addr, u8 value) override;
 
     void setDebugContext(u64 cycle, u32 pc);
     void setTrace(bool enable);

@@ -13,6 +13,7 @@ class StatisticsManager;
 extern StatisticsManager stat;
 
 struct Statistics {
+    //--------------Pipeline--------------
     u64 cycles = 0;
     u64 retired = 0;
 
@@ -41,6 +42,10 @@ struct Statistics {
     u64 branch_instructions = 0;
     u64 jump_instructions = 0;
 
+    //--------------Cache--------------
+    u64 cache_miss = 0;
+    u64 cache_hits = 0;
+
 };
 
 class StatisticsManager {
@@ -53,7 +58,7 @@ public:
     void onDataHazardStall();
     void onControlHazardStall();
     void onStructuralHazardStall();
-    void onBranchFlush();
+    void onBranchFlush(u32 count = 1);
     void onLoadUseHazard();
     void onBranches();
     void onBranchMiss();
@@ -69,6 +74,8 @@ public:
     void onStoreInstructions();
     void onBranchInstructions();
     void onJumpInstructions();
+    void onCacheMiss();
+    void onCacheHits();
 
     const Statistics& snapshot() const;
     double getIPC() const;

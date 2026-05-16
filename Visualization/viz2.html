@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RISC-V Pipeline Visualizer</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Share+Tech+Mono&display=swap');
+
+  :root {
+    --bg:        #080b10;
+    --surface:   #0e1420;
+    --border:    #1c2a3a;
+    --text:      #a8c0d8;
+    --dim:       #3a5070;
+    --green:     #00e57a;
+    --amber:     #ffa420;
+    --red:       #ff4466;
+    --blue:      #38b6ff;
+    --purple:    #b06aff;
+    --cyan:      #00d4c8;
+    --inactive:  #1c2a3a;
+    --glow-g:    0 0 12px #00e57a44;
+    --glow-a:    0 0 12px #ffa42044;
+    --glow-b:    0 0 12px #38b6ff44;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'JetBrains Mono', 'Share Tech Mono', monospace;
+    font-size: 12px;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── 顶栏 ── */
+  #header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+  #header h1 {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--green);
+    letter-spacing: 3px;
+    text-transform: uppercase;
+  }
+  #header .meta { color: var(--dim); font-size: 11px; }
+  #status-badge {
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1px;
+  }
+  .badge-running  { background: #001a0a; color: var(--green); border: 1px solid var(--green); }
+  .badge-halted   { background: #1a0010; color: var(--red);   border: 1px solid var(--red);   }
+
+  /* ── 主体布局 ── */
+  #main {
+    display: grid;
+    grid-template-columns: 200px 1fr 220px;
+    grid-template-rows: 1fr auto;
+    height: calc(100vh - 44px - 80px);
+    gap: 1px;
+    background: var(--border);
+  }
+
+  /* ── 面板通用 ── */
+  .panel {
+    background: var(--bg);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .panel-title {
+    padding: 6px 12px;
+    font-size: 10px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--dim);
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    flex-shrink: 0;
+  }
+  .panel-body {
+    overflow-y: auto;
+    flex: 1;
+    padding: 8px;
+  }
+  .panel-body::-webkit-scrollbar { width: 4px; }
+  .panel-body::-webkit-scrollbar-thumb { background: var(--border); }
+
+  /* ── 程序列表 ── */
+  .prog-line {
+    display: flex;
+    gap: 8px;
+    padding: 3px 6px;
+    border-radius: 3px;
+    cursor: default;
+    transition: background 0.1s;
+  }
+  .prog-line:hover { background: var(--surface); }
+  .prog-line.current-pc {
+    background: #001a0a;
+    border-left: 2px solid var(--green);
+    box-shadow: var(--glow-g);
+  }
+  .prog-addr { color: var(--dim); min-width: 68px; font-size: 11px; }
+  .prog-instr { color: var(--blue); }
+  .prog-line.current-pc .prog-instr { color: var(--green); font-weight: 700; }
+
+  /* ── 流水线中心区域 ── */
+  #center {
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── 流水线图 ── */
+  #pipeline-area {
+    flex: 0 0 auto;
+    padding: 20px 16px 10px;
+  }
+  #pipeline {
+    display: flex;
+    align-items: center;
+    gap: 0;
+  }
+
+  .stage-box {
+    flex: 1;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--surface);
+    padding: 8px 6px;
+    min-height: 110px;
+    position: relative;
+    transition: all 0.2s;
+  }
+  .stage-box.active {
+    border-color: var(--blue);
+    box-shadow: var(--glow-b);
+    background: #050d18;
+  }
+  .stage-name {
+    font-size: 9px;
+    letter-spacing: 2px;
+    color: var(--dim);
+    text-transform: uppercase;
+    margin-bottom: 6px;
+    text-align: center;
+  }
+  .stage-box.active .stage-name { color: var(--blue); }
+
+  .pipe-reg {
+    width: 28px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+  }
+  .pipe-reg-box {
+    width: 22px;
+    height: 80px;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    background: var(--surface);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    position: relative;
+    transition: all 0.2s;
+  }
+  .pipe-reg-box.valid {
+    border-color: var(--amber);
+    background: #100a00;
+    box-shadow: var(--glow-a);
+  }
+  .pipe-reg-box.invalid {
+    border-color: var(--inactive);
+    background: var(--inactive);
+    opacity: 0.4;
+  }
+  .pipe-reg-label {
+    font-size: 8px;
+    color: var(--dim);
+    text-align: center;
+    margin-top: 4px;
+    letter-spacing: 1px;
+  }
+  .pipe-reg-box.valid .pipe-reg-op {
+    color: var(--amber);
+    font-weight: 700;
+    font-size: 9px;
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    letter-spacing: 1px;
+  }
+  .pipe-reg-op { color: var(--dim); font-size: 8px; writing-mode: vertical-rl; }
+
+  /* stage 内字段 */
+  .stage-field {
+    display: flex;
+    justify-content: space-between;
+    gap: 4px;
+    padding: 1px 0;
+    border-bottom: 1px solid #0e1420;
+  }
+  .field-key { color: var(--dim); font-size: 10px; }
+  .field-val { color: var(--cyan); font-size: 10px; font-weight: 500; }
+  .stage-op {
+    text-align: center;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--green);
+    margin-bottom: 4px;
+    letter-spacing: 1px;
+  }
+  .stage-empty {
+    color: var(--dim);
+    font-size: 10px;
+    text-align: center;
+    margin-top: 20px;
+  }
+
+  /* ── 信息面板（内存 + 当前指令详情） ── */
+  #info-area {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 16px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    align-content: start;
+  }
+  .info-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 8px 10px;
+  }
+  .info-card-title {
+    font-size: 9px;
+    letter-spacing: 2px;
+    color: var(--dim);
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .mem-event {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 0;
+  }
+  .mem-type-read  { color: var(--green); font-size: 9px; font-weight: 700; }
+  .mem-type-write { color: var(--red);   font-size: 9px; font-weight: 700; }
+  .mem-addr  { color: var(--purple); }
+  .mem-value { color: var(--amber); }
+  .mem-empty { color: var(--dim); font-size: 10px; }
+
+  /* ── 寄存器堆 ── */
+  #regfile-panel .panel-body {
+    padding: 6px;
+  }
+  .reg-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2px;
+  }
+  .reg-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 2px 5px;
+    border-radius: 2px;
+    transition: background 0.15s;
+  }
+  .reg-item.changed {
+    background: #100a00;
+    border-left: 2px solid var(--amber);
+  }
+  .reg-name { color: var(--dim); font-size: 10px; min-width: 26px; }
+  .reg-val  { color: var(--text); font-size: 10px; }
+  .reg-item.changed .reg-val { color: var(--amber); font-weight: 700; }
+  .reg-item.nonzero .reg-val { color: var(--cyan); }
+
+  /* ── 控制栏 ── */
+  #controls {
+    height: 80px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 0 20px;
+  }
+  .btn {
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px 14px;
+    font-family: inherit;
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.15s;
+    letter-spacing: 1px;
+  }
+  .btn:hover { border-color: var(--blue); color: var(--blue); box-shadow: var(--glow-b); }
+  .btn.play  { border-color: var(--green); color: var(--green); }
+  .btn.play:hover { box-shadow: var(--glow-g); }
+  .btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+  #slider-wrap {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  #slider-info {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: var(--dim);
+  }
+  #cycle-display {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--green);
+    letter-spacing: 2px;
+  }
+  input[type=range] {
+    -webkit-appearance: none;
+    width: 100%;
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    outline: none;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--green);
+    cursor: pointer;
+    box-shadow: var(--glow-g);
+  }
+
+  /* ── 统计面板（折叠） ── */
+  #stats-panel {
+    grid-column: 1 / -1;
+    display: none;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    padding: 12px 20px;
+  }
+  #stats-panel.open { display: block; }
+  #stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 6px;
+    margin-top: 8px;
+  }
+  .stat-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 3px 8px;
+    background: var(--bg);
+    border-radius: 3px;
+    border: 1px solid var(--border);
+  }
+  .stat-key { color: var(--dim); font-size: 10px; }
+  .stat-val { color: var(--amber); font-size: 10px; font-weight: 700; }
+
+  /* ── 速度标签 ── */
+  #speed-label { font-size: 10px; color: var(--dim); white-space: nowrap; }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <h1>&#9654; RISC-V Pipeline Debugger</h1>
+  <div class="meta" id="header-meta"></div>
+  <span id="status-badge" class="badge-running">RUNNING</span>
+</div>
+
+<div id="main">
+  <!-- 程序列表 -->
+  <div class="panel" id="prog-panel">
+    <div class="panel-title">&#9654; Program</div>
+    <div class="panel-body" id="prog-list"></div>
+  </div>
+
+  <!-- 中心：流水线 + 信息 -->
+  <div class="panel" id="center">
+    <div id="pipeline-area">
+      <div id="pipeline"></div>
+    </div>
+    <div id="info-area"></div>
+  </div>
+
+  <!-- 寄存器堆 -->
+  <div class="panel" id="regfile-panel">
+    <div class="panel-title">&#9654; Register File</div>
+    <div class="panel-body">
+      <div class="reg-grid" id="reg-grid"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 控制栏 -->
+<div id="controls">
+  <button class="btn" id="btn-first" title="第一帧">&#8676;</button>
+  <button class="btn" id="btn-prev"  title="上一周期">&#9664;</button>
+  <button class="btn play" id="btn-play" title="播放">&#9654; PLAY</button>
+  <button class="btn" id="btn-next"  title="下一周期">&#9654;</button>
+  <button class="btn" id="btn-last"  title="最后帧">&#8677;</button>
+
+  <div id="slider-wrap">
+    <div id="slider-info">
+      <span id="cycle-display">CYCLE 1</span>
+      <span id="pc-display"></span>
+    </div>
+    <input type="range" id="cycle-slider" min="1" step="1">
+  </div>
+
+  <div id="speed-label">
+    Speed<br>
+    <select id="speed-sel" style="background:var(--surface);color:var(--text);border:1px solid var(--border);font-family:inherit;font-size:11px;padding:2px;">
+      <option value="500">0.5s</option>
+      <option value="250" selected>0.25s</option>
+      <option value="100">0.1s</option>
+      <option value="50">0.05s</option>
+    </select>
+  </div>
+
+  <button class="btn" id="btn-stats" title="统计">&#9776; STATS</button>
+</div>
+
+<!-- 统计面板 -->
+<div id="stats-panel">
+  <div class="panel-title">&#9654; Statistics</div>
+  <div id="stats-grid"></div>
+</div>
+
+<script>
+// ── 数据 ──────────────────────────────────────────────────────────────────────
+const DATA = {"program":[{"addr":"00000000","instr":"NOP"},{"addr":"00000004","instr":"ADDI  x10, x0, 0"},{"addr":"00000008","instr":"ADDI  x11, x0, 5"},{"addr":"0000000c","instr":"ADDI  x12, x0, 7"},{"addr":"00000010","instr":"SW    x11, 0(x10)"},{"addr":"00000014","instr":"SW    x12, 4(x10)"},{"addr":"00000018","instr":"LW    x13, 0(x10)"},{"addr":"0000001c","instr":"LW    x14, 4(x10)"},{"addr":"00000020","instr":"ADD   x15, x13, x14"},{"addr":"00000024","instr":"SUB   x16, x14, x13"},{"addr":"00000028","instr":"AND   x17, x13, x14"},{"addr":"0000002c","instr":"OR    x18, x13, x14"},{"addr":"00000030","instr":"XOR   x19, x13, x14"},{"addr":"00000034","instr":"ANDI  x20, x15, 15"},{"addr":"00000038","instr":"ORI   x21, x16, 1"},{"addr":"0000003c","instr":"BEQ   x11, x12, 8"},{"addr":"00000040","instr":"ADDI  x22, x0, 123"},{"addr":"00000044","instr":"BNE   x11, x12, 8"},{"addr":"00000048","instr":"ADDI  x23, x0, 999"},{"addr":"0000004c","instr":"JAL   x1, 12"},{"addr":"00000050","instr":"ADDI  x24, x0, 42"},{"addr":"00000054","instr":"JAL   x0, 16"},{"addr":"00000058","instr":"ADDI  x25, x0, 1"},{"addr":"0000005c","instr":"ADD   x26, x20, x25"},{"addr":"00000060","instr":"JALR  x0, 0(x1)"},{"addr":"00000064","instr":"NOP"}],"cycles":[{"num":1,"stages":{"IF_ID":{"valid":1,"op":"NOP"},"ID_EX":{"valid":0},"EX_MEM":{"valid":0},"MEM_WB":{"valid":0}},"regs":{"x0":"0x00000000","x1":"0x00000000","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000000","x12":"0x00000000","x13":"0x00000000","x14":"0x00000000","x15":"0x00000000","x16":"0x00000000","x17":"0x00000000","x18":"0x00000000","x19":"0x00000000","x20":"0x00000000","x21":"0x00000000","x22":"0x00000000","x23":"0x00000000","x24":"0x00000000","x25":"0x00000000","x26":"0x00000000","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[],"pc":"0x00000004","halted":0},{"num":2,"stages":{"IF_ID":{"valid":1,"op":"ADDI"},"ID_EX":{"valid":1,"op":"NOP","rs1v":"0x0","rs2v":"0x0","imm":"0x0"},"EX_MEM":{"valid":0},"MEM_WB":{"valid":0}},"regs":{"x0":"0x00000000","x1":"0x00000000","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000000","x12":"0x00000000","x13":"0x00000000","x14":"0x00000000","x15":"0x00000000","x16":"0x00000000","x17":"0x00000000","x18":"0x00000000","x19":"0x00000000","x20":"0x00000000","x21":"0x00000000","x22":"0x00000000","x23":"0x00000000","x24":"0x00000000","x25":"0x00000000","x26":"0x00000000","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[],"pc":"0x00000008","halted":0},{"num":3,"stages":{"IF_ID":{"valid":1,"op":"ADDI"},"ID_EX":{"valid":1,"op":"ADDI","rs1v":"0x0","rs2v":"0x0","imm":"0x0"},"EX_MEM":{"valid":1,"op":"NOP","alu":"0x0","rd":"x0"},"MEM_WB":{"valid":0}},"regs":{"x0":"0x00000000","x1":"0x00000000","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000000","x12":"0x00000000","x13":"0x00000000","x14":"0x00000000","x15":"0x00000000","x16":"0x00000000","x17":"0x00000000","x18":"0x00000000","x19":"0x00000000","x20":"0x00000000","x21":"0x00000000","x22":"0x00000000","x23":"0x00000000","x24":"0x00000000","x25":"0x00000000","x26":"0x00000000","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[],"pc":"0x0000000c","halted":0},{"num":4,"stages":{"IF_ID":{"valid":1,"op":"ADDI"},"ID_EX":{"valid":1,"op":"ADDI","rs1v":"0x0","rs2v":"0x0","imm":"0x5"},"EX_MEM":{"valid":1,"op":"ADDI","alu":"0x0","rd":"x10"},"MEM_WB":{"valid":1,"op":"NOP","wb":"0x0","rd":"x0"}},"regs":{"x0":"0x00000000","x1":"0x00000000","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000000","x12":"0x00000000","x13":"0x00000000","x14":"0x00000000","x15":"0x00000000","x16":"0x00000000","x17":"0x00000000","x18":"0x00000000","x19":"0x00000000","x20":"0x00000000","x21":"0x00000000","x22":"0x00000000","x23":"0x00000000","x24":"0x00000000","x25":"0x00000000","x26":"0x00000000","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[],"pc":"0x00000010","halted":0},{"num":5,"stages":{"IF_ID":{"valid":1,"op":"SW"},"ID_EX":{"valid":1,"op":"ADDI","rs1v":"0x0","rs2v":"0x0","imm":"0x7"},"EX_MEM":{"valid":1,"op":"ADDI","alu":"0x5","rd":"x11"},"MEM_WB":{"valid":1,"op":"ADDI","wb":"0x0","rd":"x10"}},"regs":{"x0":"0x00000000","x1":"0x00000000","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000000","x12":"0x00000000","x13":"0x00000000","x14":"0x00000000","x15":"0x00000000","x16":"0x00000000","x17":"0x00000000","x18":"0x00000000","x19":"0x00000000","x20":"0x00000000","x21":"0x00000000","x22":"0x00000000","x23":"0x00000000","x24":"0x00000000","x25":"0x00000000","x26":"0x00000000","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[],"pc":"0x00000014","halted":0},{"num":6,"stages":{"IF_ID":{"valid":1,"op":"SW"},"ID_EX":{"valid":1,"op":"SW","rs1v":"0x0","rs2v":"0x0","imm":"0x0"},"EX_MEM":{"valid":1,"op":"ADDI","alu":"0x7","rd":"x12"},"MEM_WB":{"valid":1,"op":"ADDI","wb":"0x5","rd":"x11"}},"regs":{"x0":"0x00000000","x1":"0x00000000","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000000","x12":"0x00000000","x13":"0x00000000","x14":"0x00000000","x15":"0x00000000","x16":"0x00000000","x17":"0x00000000","x18":"0x00000000","x19":"0x00000000","x20":"0x00000000","x21":"0x00000000","x22":"0x00000000","x23":"0x00000000","x24":"0x00000000","x25":"0x00000000","x26":"0x00000000","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[],"pc":"0x00000018","halted":0},{"num":7,"stages":{"IF_ID":{"valid":1,"op":"LW"},"ID_EX":{"valid":1,"op":"SW","rs1v":"0x0","rs2v":"0x0","imm":"0x4"},"EX_MEM":{"valid":1,"op":"SW","alu":"0x0","rd":"x0"},"MEM_WB":{"valid":1,"op":"ADDI","wb":"0x7","rd":"x12"}},"regs":{"x0":"0x00000000","x1":"0x00000000","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000005","x12":"0x00000000","x13":"0x00000000","x14":"0x00000000","x15":"0x00000000","x16":"0x00000000","x17":"0x00000000","x18":"0x00000000","x19":"0x00000000","x20":"0x00000000","x21":"0x00000000","x22":"0x00000000","x23":"0x00000000","x24":"0x00000000","x25":"0x00000000","x26":"0x00000000","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[{"cycle":8,"pc":"0x0000001c","id":1,"type":"WRITE","addr":"0x00000000","value":"0x05"}],"pc":"0x0000001c","halted":0},{"num":8,"stages":{"IF_ID":{"valid":1,"op":"LW"},"ID_EX":{"valid":1,"op":"LW","rs1v":"0x0","rs2v":"0x0","imm":"0x0"},"EX_MEM":{"valid":1,"op":"SW","alu":"0x4","rd":"x0"},"MEM_WB":{"valid":1,"op":"SW","wb":"0x0","rd":"x0"}},"regs":{"x0":"0x00000000","x1":"0x00000000","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000005","x12":"0x00000007","x13":"0x00000000","x14":"0x00000000","x15":"0x00000000","x16":"0x00000000","x17":"0x00000000","x18":"0x00000000","x19":"0x00000000","x20":"0x00000000","x21":"0x00000000","x22":"0x00000000","x23":"0x00000000","x24":"0x00000000","x25":"0x00000000","x26":"0x00000000","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[{"cycle":9,"pc":"0x00000020","id":5,"type":"WRITE","addr":"0x00000004","value":"0x07"}],"pc":"0x00000020","halted":0},{"num":9,"stages":{"IF_ID":{"valid":1,"op":"ADD"},"ID_EX":{"valid":1,"op":"LW","rs1v":"0x0","rs2v":"0x0","imm":"0x4"},"EX_MEM":{"valid":1,"op":"LW","alu":"0x0","rd":"x13"},"MEM_WB":{"valid":1,"op":"SW","wb":"0x4","rd":"x0"}},"regs":{"x0":"0x00000000","x1":"0x00000000","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000005","x12":"0x00000007","x13":"0x00000000","x14":"0x00000000","x15":"0x00000000","x16":"0x00000000","x17":"0x00000000","x18":"0x00000000","x19":"0x00000000","x20":"0x00000000","x21":"0x00000000","x22":"0x00000000","x23":"0x00000000","x24":"0x00000000","x25":"0x00000000","x26":"0x00000000","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[{"cycle":10,"pc":"0x00000024","id":9,"type":"READ","addr":"0x00000000","value":"0x05"}],"pc":"0x00000024","halted":0},{"num":10,"stages":{"IF_ID":{"valid":1,"op":"ADD"},"ID_EX":{"valid":0},"EX_MEM":{"valid":1,"op":"LW","alu":"0x4","rd":"x14"},"MEM_WB":{"valid":1,"op":"LW","wb":"0x5","rd":"x13"}},"regs":{"x0":"0x00000000","x1":"0x00000000","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000005","x12":"0x00000007","x13":"0x00000000","x14":"0x00000000","x15":"0x00000000","x16":"0x00000000","x17":"0x00000000","x18":"0x00000000","x19":"0x00000000","x20":"0x00000000","x21":"0x00000000","x22":"0x00000000","x23":"0x00000000","x24":"0x00000000","x25":"0x00000000","x26":"0x00000000","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[{"cycle":11,"pc":"0x00000024","id":13,"type":"READ","addr":"0x00000004","value":"0x07"}],"pc":"0x00000024","halted":0},{"num":11,"stages":{"IF_ID":{"valid":1,"op":"SUB"},"ID_EX":{"valid":1,"op":"ADD","rs1v":"0x5","rs2v":"0x0","imm":"0x0"},"EX_MEM":{"valid":0},"MEM_WB":{"valid":1,"op":"LW","wb":"0x7","rd":"x14"}},"regs":{"x0":"0x00000000","x1":"0x00000000","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000005","x12":"0x00000007","x13":"0x00000005","x14":"0x00000000","x15":"0x00000000","x16":"0x00000000","x17":"0x00000000","x18":"0x00000000","x19":"0x00000000","x20":"0x00000000","x21":"0x00000000","x22":"0x00000000","x23":"0x00000000","x24":"0x00000000","x25":"0x00000000","x26":"0x00000000","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[],"pc":"0x00000028","halted":0},{"num":12,"stages":{"IF_ID":{"valid":1,"op":"AND"},"ID_EX":{"valid":1,"op":"SUB","rs1v":"0x7","rs2v":"0x5","imm":"0x0"},"EX_MEM":{"valid":1,"op":"ADD","alu":"0xc","rd":"x15"},"MEM_WB":{"valid":0}},"regs":{"x0":"0x00000000","x1":"0x00000000","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000005","x12":"0x00000007","x13":"0x00000005","x14":"0x00000007","x15":"0x00000000","x16":"0x00000000","x17":"0x00000000","x18":"0x00000000","x19":"0x00000000","x20":"0x00000000","x21":"0x00000000","x22":"0x00000000","x23":"0x00000000","x24":"0x00000000","x25":"0x00000000","x26":"0x00000000","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[],"pc":"0x0000002c","halted":0},{"num":13,"stages":{"IF_ID":{"valid":1,"op":"OR"},"ID_EX":{"valid":1,"op":"AND","rs1v":"0x5","rs2v":"0x7","imm":"0x0"},"EX_MEM":{"valid":1,"op":"SUB","alu":"0x2","rd":"x16"},"MEM_WB":{"valid":1,"op":"ADD","wb":"0xc","rd":"x15"}},"regs":{"x0":"0x00000000","x1":"0x00000000","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000005","x12":"0x00000007","x13":"0x00000005","x14":"0x00000007","x15":"0x00000000","x16":"0x00000000","x17":"0x00000000","x18":"0x00000000","x19":"0x00000000","x20":"0x00000000","x21":"0x00000000","x22":"0x00000000","x23":"0x00000000","x24":"0x00000000","x25":"0x00000000","x26":"0x00000000","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[],"pc":"0x00000030","halted":0},{"num":14,"stages":{"IF_ID":{"valid":1,"op":"XOR"},"ID_EX":{"valid":1,"op":"OR","rs1v":"0x5","rs2v":"0x7","imm":"0x0"},"EX_MEM":{"valid":1,"op":"AND","alu":"0x5","rd":"x17"},"MEM_WB":{"valid":1,"op":"SUB","wb":"0x2","rd":"x16"}},"regs":{"x0":"0x00000000","x1":"0x00000000","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000005","x12":"0x00000007","x13":"0x00000005","x14":"0x00000007","x15":"0x0000000c","x16":"0x00000000","x17":"0x00000000","x18":"0x00000000","x19":"0x00000000","x20":"0x00000000","x21":"0x00000000","x22":"0x00000000","x23":"0x00000000","x24":"0x00000000","x25":"0x00000000","x26":"0x00000000","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[],"pc":"0x00000034","halted":0},{"num":15,"stages":{"IF_ID":{"valid":1,"op":"ANDI"},"ID_EX":{"valid":1,"op":"XOR","rs1v":"0x5","rs2v":"0x7","imm":"0x0"},"EX_MEM":{"valid":1,"op":"OR","alu":"0x7","rd":"x18"},"MEM_WB":{"valid":1,"op":"AND","wb":"0x5","rd":"x17"}},"regs":{"x0":"0x00000000","x1":"0x00000000","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000005","x12":"0x00000007","x13":"0x00000005","x14":"0x00000007","x15":"0x0000000c","x16":"0x00000002","x17":"0x00000000","x18":"0x00000000","x19":"0x00000000","x20":"0x00000000","x21":"0x00000000","x22":"0x00000000","x23":"0x00000000","x24":"0x00000000","x25":"0x00000000","x26":"0x00000000","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[],"pc":"0x00000038","halted":0},{"num":16,"stages":{"IF_ID":{"valid":1,"op":"ORI"},"ID_EX":{"valid":1,"op":"ANDI","rs1v":"0xc","rs2v":"0x0","imm":"0xf"},"EX_MEM":{"valid":1,"op":"XOR","alu":"0x2","rd":"x19"},"MEM_WB":{"valid":1,"op":"OR","wb":"0x7","rd":"x18"}},"regs":{"x0":"0x00000000","x1":"0x00000000","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000005","x12":"0x00000007","x13":"0x00000005","x14":"0x00000007","x15":"0x0000000c","x16":"0x00000002","x17":"0x00000005","x18":"0x00000000","x19":"0x00000000","x20":"0x00000000","x21":"0x00000000","x22":"0x00000000","x23":"0x00000000","x24":"0x00000000","x25":"0x00000000","x26":"0x00000000","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[],"pc":"0x0000003c","halted":0},{"num":17,"stages":{"IF_ID":{"valid":1,"op":"BEQ"},"ID_EX":{"valid":1,"op":"ORI","rs1v":"0x2","rs2v":"0x0","imm":"0x1"},"EX_MEM":{"valid":1,"op":"ANDI","alu":"0xc","rd":"x20"},"MEM_WB":{"valid":1,"op":"XOR","wb":"0x2","rd":"x19"}},"regs":{"x0":"0x00000000","x1":"0x00000000","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000005","x12":"0x00000007","x13":"0x00000005","x14":"0x00000007","x15":"0x0000000c","x16":"0x00000002","x17":"0x00000005","x18":"0x00000007","x19":"0x00000000","x20":"0x00000000","x21":"0x00000000","x22":"0x00000000","x23":"0x00000000","x24":"0x00000000","x25":"0x00000000","x26":"0x00000000","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[],"pc":"0x00000040","halted":0},{"num":18,"stages":{"IF_ID":{"valid":1,"op":"ADDI"},"ID_EX":{"valid":1,"op":"BEQ","rs1v":"0x5","rs2v":"0x7","imm":"0x8"},"EX_MEM":{"valid":1,"op":"ORI","alu":"0x3","rd":"x21"},"MEM_WB":{"valid":1,"op":"ANDI","wb":"0xc","rd":"x20"}},"regs":{"x0":"0x00000000","x1":"0x00000000","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000005","x12":"0x00000007","x13":"0x00000005","x14":"0x00000007","x15":"0x0000000c","x16":"0x00000002","x17":"0x00000005","x18":"0x00000007","x19":"0x00000002","x20":"0x00000000","x21":"0x00000000","x22":"0x00000000","x23":"0x00000000","x24":"0x00000000","x25":"0x00000000","x26":"0x00000000","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[],"pc":"0x00000044","halted":0},{"num":19,"stages":{"IF_ID":{"valid":1,"op":"BNE"},"ID_EX":{"valid":1,"op":"ADDI","rs1v":"0x0","rs2v":"0x0","imm":"0x7b"},"EX_MEM":{"valid":1,"op":"BEQ","alu":"0xfffffffe","rd":"x0"},"MEM_WB":{"valid":1,"op":"ORI","wb":"0x3","rd":"x21"}},"regs":{"x0":"0x00000000","x1":"0x00000000","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000005","x12":"0x00000007","x13":"0x00000005","x14":"0x00000007","x15":"0x0000000c","x16":"0x00000002","x17":"0x00000005","x18":"0x00000007","x19":"0x00000002","x20":"0x0000000c","x21":"0x00000000","x22":"0x00000000","x23":"0x00000000","x24":"0x00000000","x25":"0x00000000","x26":"0x00000000","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[],"pc":"0x00000048","halted":0},{"num":20,"stages":{"IF_ID":{"valid":1,"op":"ADDI"},"ID_EX":{"valid":1,"op":"BNE","rs1v":"0x5","rs2v":"0x7","imm":"0x8"},"EX_MEM":{"valid":1,"op":"ADDI","alu":"0x7b","rd":"x22"},"MEM_WB":{"valid":1,"op":"BEQ","wb":"0xfffffffe","rd":"x0"}},"regs":{"x0":"0x00000000","x1":"0x00000000","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000005","x12":"0x00000007","x13":"0x00000005","x14":"0x00000007","x15":"0x0000000c","x16":"0x00000002","x17":"0x00000005","x18":"0x00000007","x19":"0x00000002","x20":"0x0000000c","x21":"0x00000003","x22":"0x00000000","x23":"0x00000000","x24":"0x00000000","x25":"0x00000000","x26":"0x00000000","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[],"pc":"0x0000004c","halted":0},{"num":21,"stages":{"IF_ID":{"valid":0},"ID_EX":{"valid":0},"EX_MEM":{"valid":1,"op":"BNE","alu":"0xfffffffe","rd":"x0"},"MEM_WB":{"valid":1,"op":"ADDI","wb":"0x7b","rd":"x22"}},"regs":{"x0":"0x00000000","x1":"0x00000000","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000005","x12":"0x00000007","x13":"0x00000005","x14":"0x00000007","x15":"0x0000000c","x16":"0x00000002","x17":"0x00000005","x18":"0x00000007","x19":"0x00000002","x20":"0x0000000c","x21":"0x00000003","x22":"0x00000000","x23":"0x00000000","x24":"0x00000000","x25":"0x00000000","x26":"0x00000000","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[],"pc":"0x0000004c","halted":0},{"num":22,"stages":{"IF_ID":{"valid":1,"op":"JAL"},"ID_EX":{"valid":0},"EX_MEM":{"valid":0},"MEM_WB":{"valid":1,"op":"BNE","wb":"0xfffffffe","rd":"x0"}},"regs":{"x0":"0x00000000","x1":"0x00000000","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000005","x12":"0x00000007","x13":"0x00000005","x14":"0x00000007","x15":"0x0000000c","x16":"0x00000002","x17":"0x00000005","x18":"0x00000007","x19":"0x00000002","x20":"0x0000000c","x21":"0x00000003","x22":"0x0000007b","x23":"0x00000000","x24":"0x00000000","x25":"0x00000000","x26":"0x00000000","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[],"pc":"0x00000050","halted":0},{"num":23,"stages":{"IF_ID":{"valid":1,"op":"ADDI"},"ID_EX":{"valid":1,"op":"JAL","rs1v":"0x0","rs2v":"0x0","imm":"0xc"},"EX_MEM":{"valid":0},"MEM_WB":{"valid":0}},"regs":{"x0":"0x00000000","x1":"0x00000000","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000005","x12":"0x00000007","x13":"0x00000005","x14":"0x00000007","x15":"0x0000000c","x16":"0x00000002","x17":"0x00000005","x18":"0x00000007","x19":"0x00000002","x20":"0x0000000c","x21":"0x00000003","x22":"0x0000007b","x23":"0x00000000","x24":"0x00000000","x25":"0x00000000","x26":"0x00000000","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[],"pc":"0x00000054","halted":0},{"num":24,"stages":{"IF_ID":{"valid":0},"ID_EX":{"valid":0},"EX_MEM":{"valid":1,"op":"JAL","alu":"0x50","rd":"x1"},"MEM_WB":{"valid":0}},"regs":{"x0":"0x00000000","x1":"0x00000000","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000005","x12":"0x00000007","x13":"0x00000005","x14":"0x00000007","x15":"0x0000000c","x16":"0x00000002","x17":"0x00000005","x18":"0x00000007","x19":"0x00000002","x20":"0x0000000c","x21":"0x00000003","x22":"0x0000007b","x23":"0x00000000","x24":"0x00000000","x25":"0x00000000","x26":"0x00000000","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[],"pc":"0x00000058","halted":0},{"num":25,"stages":{"IF_ID":{"valid":1,"op":"ADDI"},"ID_EX":{"valid":0},"EX_MEM":{"valid":0},"MEM_WB":{"valid":1,"op":"JAL","wb":"0x50","rd":"x1"}},"regs":{"x0":"0x00000000","x1":"0x00000000","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000005","x12":"0x00000007","x13":"0x00000005","x14":"0x00000007","x15":"0x0000000c","x16":"0x00000002","x17":"0x00000005","x18":"0x00000007","x19":"0x00000002","x20":"0x0000000c","x21":"0x00000003","x22":"0x0000007b","x23":"0x00000000","x24":"0x00000000","x25":"0x00000000","x26":"0x00000000","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[],"pc":"0x0000005c","halted":0},{"num":26,"stages":{"IF_ID":{"valid":1,"op":"ADD"},"ID_EX":{"valid":1,"op":"ADDI","rs1v":"0x0","rs2v":"0x0","imm":"0x1"},"EX_MEM":{"valid":0},"MEM_WB":{"valid":0}},"regs":{"x0":"0x00000000","x1":"0x00000050","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000005","x12":"0x00000007","x13":"0x00000005","x14":"0x00000007","x15":"0x0000000c","x16":"0x00000002","x17":"0x00000005","x18":"0x00000007","x19":"0x00000002","x20":"0x0000000c","x21":"0x00000003","x22":"0x0000007b","x23":"0x00000000","x24":"0x00000000","x25":"0x00000000","x26":"0x00000000","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[],"pc":"0x00000060","halted":0},{"num":27,"stages":{"IF_ID":{"valid":1,"op":"JALR"},"ID_EX":{"valid":1,"op":"ADD","rs1v":"0xc","rs2v":"0x0","imm":"0x0"},"EX_MEM":{"valid":1,"op":"ADDI","alu":"0x1","rd":"x25"},"MEM_WB":{"valid":0}},"regs":{"x0":"0x00000000","x1":"0x00000050","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000005","x12":"0x00000007","x13":"0x00000005","x14":"0x00000007","x15":"0x0000000c","x16":"0x00000002","x17":"0x00000005","x18":"0x00000007","x19":"0x00000002","x20":"0x0000000c","x21":"0x00000003","x22":"0x0000007b","x23":"0x00000000","x24":"0x00000000","x25":"0x00000000","x26":"0x00000000","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[],"pc":"0x00000064","halted":0},{"num":28,"stages":{"IF_ID":{"valid":1,"op":"NOP"},"ID_EX":{"valid":1,"op":"JALR","rs1v":"0x50","rs2v":"0x0","imm":"0x0"},"EX_MEM":{"valid":1,"op":"ADD","alu":"0xd","rd":"x26"},"MEM_WB":{"valid":1,"op":"ADDI","wb":"0x1","rd":"x25"}},"regs":{"x0":"0x00000000","x1":"0x00000050","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000005","x12":"0x00000007","x13":"0x00000005","x14":"0x00000007","x15":"0x0000000c","x16":"0x00000002","x17":"0x00000005","x18":"0x00000007","x19":"0x00000002","x20":"0x0000000c","x21":"0x00000003","x22":"0x0000007b","x23":"0x00000000","x24":"0x00000000","x25":"0x00000000","x26":"0x00000000","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[],"pc":"0x00000068","halted":0},{"num":29,"stages":{"IF_ID":{"valid":0},"ID_EX":{"valid":0},"EX_MEM":{"valid":1,"op":"JALR","alu":"0x64","rd":"x0"},"MEM_WB":{"valid":1,"op":"ADD","wb":"0xd","rd":"x26"}},"regs":{"x0":"0x00000000","x1":"0x00000050","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000005","x12":"0x00000007","x13":"0x00000005","x14":"0x00000007","x15":"0x0000000c","x16":"0x00000002","x17":"0x00000005","x18":"0x00000007","x19":"0x00000002","x20":"0x0000000c","x21":"0x00000003","x22":"0x0000007b","x23":"0x00000000","x24":"0x00000000","x25":"0x00000001","x26":"0x00000000","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[],"pc":"0x00000050","halted":0},{"num":30,"stages":{"IF_ID":{"valid":1,"op":"ADDI"},"ID_EX":{"valid":0},"EX_MEM":{"valid":0},"MEM_WB":{"valid":1,"op":"JALR","wb":"0x64","rd":"x0"}},"regs":{"x0":"0x00000000","x1":"0x00000050","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000005","x12":"0x00000007","x13":"0x00000005","x14":"0x00000007","x15":"0x0000000c","x16":"0x00000002","x17":"0x00000005","x18":"0x00000007","x19":"0x00000002","x20":"0x0000000c","x21":"0x00000003","x22":"0x0000007b","x23":"0x00000000","x24":"0x00000000","x25":"0x00000001","x26":"0x0000000d","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[],"pc":"0x00000054","halted":0},{"num":31,"stages":{"IF_ID":{"valid":1,"op":"JAL"},"ID_EX":{"valid":1,"op":"ADDI","rs1v":"0x0","rs2v":"0x0","imm":"0x2a"},"EX_MEM":{"valid":0},"MEM_WB":{"valid":0}},"regs":{"x0":"0x00000000","x1":"0x00000050","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000005","x12":"0x00000007","x13":"0x00000005","x14":"0x00000007","x15":"0x0000000c","x16":"0x00000002","x17":"0x00000005","x18":"0x00000007","x19":"0x00000002","x20":"0x0000000c","x21":"0x00000003","x22":"0x0000007b","x23":"0x00000000","x24":"0x00000000","x25":"0x00000001","x26":"0x0000000d","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[],"pc":"0x00000058","halted":0},{"num":32,"stages":{"IF_ID":{"valid":1,"op":"ADDI"},"ID_EX":{"valid":1,"op":"JAL","rs1v":"0x0","rs2v":"0x0","imm":"0x10"},"EX_MEM":{"valid":1,"op":"ADDI","alu":"0x2a","rd":"x24"},"MEM_WB":{"valid":0}},"regs":{"x0":"0x00000000","x1":"0x00000050","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000005","x12":"0x00000007","x13":"0x00000005","x14":"0x00000007","x15":"0x0000000c","x16":"0x00000002","x17":"0x00000005","x18":"0x00000007","x19":"0x00000002","x20":"0x0000000c","x21":"0x00000003","x22":"0x0000007b","x23":"0x00000000","x24":"0x00000000","x25":"0x00000001","x26":"0x0000000d","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[],"pc":"0x0000005c","halted":0},{"num":33,"stages":{"IF_ID":{"valid":0},"ID_EX":{"valid":0},"EX_MEM":{"valid":1,"op":"JAL","alu":"0x58","rd":"x0"},"MEM_WB":{"valid":1,"op":"ADDI","wb":"0x2a","rd":"x24"}},"regs":{"x0":"0x00000000","x1":"0x00000050","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000005","x12":"0x00000007","x13":"0x00000005","x14":"0x00000007","x15":"0x0000000c","x16":"0x00000002","x17":"0x00000005","x18":"0x00000007","x19":"0x00000002","x20":"0x0000000c","x21":"0x00000003","x22":"0x0000007b","x23":"0x00000000","x24":"0x00000000","x25":"0x00000001","x26":"0x0000000d","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[],"pc":"0x00000064","halted":0},{"num":34,"stages":{"IF_ID":{"valid":1,"op":"NOP"},"ID_EX":{"valid":0},"EX_MEM":{"valid":0},"MEM_WB":{"valid":1,"op":"JAL","wb":"0x58","rd":"x0"}},"regs":{"x0":"0x00000000","x1":"0x00000050","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000005","x12":"0x00000007","x13":"0x00000005","x14":"0x00000007","x15":"0x0000000c","x16":"0x00000002","x17":"0x00000005","x18":"0x00000007","x19":"0x00000002","x20":"0x0000000c","x21":"0x00000003","x22":"0x0000007b","x23":"0x00000000","x24":"0x0000002a","x25":"0x00000001","x26":"0x0000000d","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[],"pc":"0x00000068","halted":0},{"num":35,"stages":{"IF_ID":{"valid":0},"ID_EX":{"valid":1,"op":"NOP","rs1v":"0x0","rs2v":"0x0","imm":"0x0"},"EX_MEM":{"valid":0},"MEM_WB":{"valid":0}},"regs":{"x0":"0x00000000","x1":"0x00000050","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000005","x12":"0x00000007","x13":"0x00000005","x14":"0x00000007","x15":"0x0000000c","x16":"0x00000002","x17":"0x00000005","x18":"0x00000007","x19":"0x00000002","x20":"0x0000000c","x21":"0x00000003","x22":"0x0000007b","x23":"0x00000000","x24":"0x0000002a","x25":"0x00000001","x26":"0x0000000d","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[],"pc":"0x00000068","halted":1},{"num":36,"stages":{"IF_ID":{"valid":0},"ID_EX":{"valid":0},"EX_MEM":{"valid":1,"op":"NOP","alu":"0x0","rd":"x0"},"MEM_WB":{"valid":0}},"regs":{"x0":"0x00000000","x1":"0x00000050","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000005","x12":"0x00000007","x13":"0x00000005","x14":"0x00000007","x15":"0x0000000c","x16":"0x00000002","x17":"0x00000005","x18":"0x00000007","x19":"0x00000002","x20":"0x0000000c","x21":"0x00000003","x22":"0x0000007b","x23":"0x00000000","x24":"0x0000002a","x25":"0x00000001","x26":"0x0000000d","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[],"pc":"0x00000068","halted":1},{"num":37,"stages":{"IF_ID":{"valid":0},"ID_EX":{"valid":0},"EX_MEM":{"valid":0},"MEM_WB":{"valid":1,"op":"NOP","wb":"0x0","rd":"x0"}},"regs":{"x0":"0x00000000","x1":"0x00000050","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000005","x12":"0x00000007","x13":"0x00000005","x14":"0x00000007","x15":"0x0000000c","x16":"0x00000002","x17":"0x00000005","x18":"0x00000007","x19":"0x00000002","x20":"0x0000000c","x21":"0x00000003","x22":"0x0000007b","x23":"0x00000000","x24":"0x0000002a","x25":"0x00000001","x26":"0x0000000d","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[],"pc":"0x00000068","halted":1},{"num":38,"stages":{"IF_ID":{"valid":0},"ID_EX":{"valid":0},"EX_MEM":{"valid":0},"MEM_WB":{"valid":0}},"regs":{"x0":"0x00000000","x1":"0x00000050","x2":"0x00000000","x3":"0x00000000","x4":"0x00000000","x5":"0x00000000","x6":"0x00000000","x7":"0x00000000","x8":"0x00000000","x9":"0x00000000","x10":"0x00000000","x11":"0x00000005","x12":"0x00000007","x13":"0x00000005","x14":"0x00000007","x15":"0x0000000c","x16":"0x00000002","x17":"0x00000005","x18":"0x00000007","x19":"0x00000002","x20":"0x0000000c","x21":"0x00000003","x22":"0x0000007b","x23":"0x00000000","x24":"0x0000002a","x25":"0x00000001","x26":"0x0000000d","x27":"0x00000000","x28":"0x00000000","x29":"0x00000000","x30":"0x00000000","x31":"0x00000000"},"mem_events":[],"pc":"0x00000068","halted":1}],"statistics":{"cycles":38,"retired":25,"IPC":0.6579,"CPI":1.52,"data_hazard_stalls":0,"control_hazard_stalls":7,"structural_hazard_stalls":0,"load_use_hazards":1,"branch_flushes":4,"branches":2,"branch_miss":1,"branch_miss_rate":0.5,"loads":2,"stores":2,"if_busy_cycles":35,"id_busy_cycles":30,"ex_busy_cycles":25,"mem_busy_cycles":25,"wb_busy_cycles":25,"alu_instructions":14,"load_instructions":2,"store_instructions":2,"branch_instructions":2,"jump_instructions":3},"watchpoints":{"0x00000000":"0x05","0x00000004":"0x07"}};
+
+const cycles  = DATA.cycles;
+const program = DATA.program;
+const stats   = DATA.statistics;
+const MAX     = cycles.length;
+
+// ── 状态 ─────────────────────────────────────────────────────────────────────
+let currentIdx = 0;
+let playTimer  = null;
+
+// ── DOM refs ──────────────────────────────────────────────────────────────────
+const slider    = document.getElementById('cycle-slider');
+const cycleLbl  = document.getElementById('cycle-display');
+const pcLbl     = document.getElementById('pc-display');
+const statusBdg = document.getElementById('status-badge');
+const headerMeta= document.getElementById('header-meta');
+
+// ── 初始化程序列表 ────────────────────────────────────────────────────────────
+function initProgList() {
+  const container = document.getElementById('prog-list');
+  program.forEach(p => {
+    const div = document.createElement('div');
+    div.className = 'prog-line';
+    div.id = `pl-${p.addr}`;
+    div.innerHTML = `<span class="prog-addr">0x${p.addr}</span><span class="prog-instr">${p.instr}</span>`;
+    container.appendChild(div);
+  });
+}
+
+// ── 初始化统计 ────────────────────────────────────────────────────────────────
+function initStats() {
+  const grid = document.getElementById('stats-grid');
+  for (const [k, v] of Object.entries(stats)) {
+    const div = document.createElement('div');
+    div.className = 'stat-item';
+    div.innerHTML = `<span class="stat-key">${k}</span><span class="stat-val">${v}</span>`;
+    grid.appendChild(div);
+  }
+  document.getElementById('btn-stats').addEventListener('click', () => {
+    document.getElementById('stats-panel').classList.toggle('open');
+  });
+}
+
+// ── 渲染某一周期 ──────────────────────────────────────────────────────────────
+const STAGE_DEFS = [
+  { key: 'IF',     label: 'IF',     regKey: null,     displayFields: [] },
+  { key: 'IF_ID',  label: 'IF/ID',  regKey: 'IF_ID',  isPipeReg: true },
+  { key: 'ID',     label: 'ID',     regKey: null,     displayFields: [] },
+  { key: 'ID_EX',  label: 'ID/EX',  regKey: 'ID_EX',  isPipeReg: true },
+  { key: 'EX',     label: 'EX',     regKey: null,     displayFields: [] },
+  { key: 'EX_MEM', label: 'EX/MEM', regKey: 'EX_MEM', isPipeReg: true },
+  { key: 'MEM',    label: 'MEM',    regKey: null,     displayFields: [] },
+  { key: 'MEM_WB', label: 'MEM/WB', regKey: 'MEM_WB', isPipeReg: true },
+  { key: 'WB',     label: 'WB',     regKey: null,     displayFields: [] },
+];
+
+// pipeline reg 展示字段顺序
+const REG_FIELDS = {
+  IF_ID:  ['op'],
+  ID_EX:  ['op', 'rs1v', 'rs2v', 'imm'],
+  EX_MEM: ['op', 'alu', 'rd'],
+  MEM_WB: ['op', 'wb', 'rd'],
+};
+
+function renderCycle(idx) {
+  const c = cycles[idx];
+  const prev = idx > 0 ? cycles[idx - 1] : null;
+
+  // 头部
+  cycleLbl.textContent = `CYCLE ${c.num}`;
+  pcLbl.textContent    = `PC = ${c.pc}`;
+  slider.value         = idx + 1;
+  statusBdg.textContent = c.halted ? 'HALTED' : 'RUNNING';
+  statusBdg.className  = c.halted ? 'badge-halted' : 'badge-running';
+
+  // 高亮当前 PC 在程序列表
+  document.querySelectorAll('.prog-line.current-pc').forEach(el => el.classList.remove('current-pc'));
+  const pcHex = c.pc.replace('0x', '').padStart(8, '0');
+  const el = document.getElementById(`pl-${pcHex}`);
+  if (el) {
+    el.classList.add('current-pc');
+    el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+
+  // 流水线
+  renderPipeline(c);
+
+  // 寄存器
+  renderRegs(c, prev);
+
+  // 信息区
+  renderInfo(c);
+}
+
+function renderPipeline(c) {
+  const container = document.getElementById('pipeline');
+  container.innerHTML = '';
+
+  // 从 stages 对象推断各实际 stage 的"活跃指令"
+  // IF: 当前 cycle 的 PC 正在取指
+  // ID: IF/ID 里的内容
+  // EX: ID/EX 里的内容
+  // MEM: EX/MEM 里的内容
+  // WB: MEM/WB 里的内容
+  const stageActive = {
+    IF:  { valid: 1, op: 'FETCH' },
+    ID:  c.stages['IF_ID']  || { valid: 0 },
+    EX:  c.stages['ID_EX']  || { valid: 0 },
+    MEM: c.stages['EX_MEM'] || { valid: 0 },
+    WB:  c.stages['MEM_WB'] || { valid: 0 },
+  };
+
+  const pipeRegs = ['IF_ID', 'ID_EX', 'EX_MEM', 'MEM_WB'];
+  const stageOrder = ['IF', 'ID', 'EX', 'MEM', 'WB'];
+
+  stageOrder.forEach((stageName, i) => {
+    const info = stageActive[stageName];
+    const box = document.createElement('div');
+    box.className = `stage-box${info.valid ? ' active' : ''}`;
+
+    let inner = `<div class="stage-name">${stageName}</div>`;
+    if (info.valid && info.op) {
+      inner += `<div class="stage-op">${info.op}</div>`;
+      const fields = REG_FIELDS[pipeRegs[i-1]] || [];
+      if (i > 0) {
+        const rd = c.stages[pipeRegs[i-1]] || {};
+        const showFields = Object.entries(rd).filter(([k]) => k !== 'op' && k !== 'valid');
+        showFields.forEach(([k, v]) => {
+          inner += `<div class="stage-field">
+            <span class="field-key">${k}</span>
+            <span class="field-val">${v}</span>
+          </div>`;
+        });
+      }
+    } else {
+      inner += `<div class="stage-empty">─ idle ─</div>`;
+    }
+    box.innerHTML = inner;
+    container.appendChild(box);
+
+    // 流水线寄存器（除最后一个 stage 后）
+    if (i < stageOrder.length - 1) {
+      const regKey = pipeRegs[i];
+      const regData = c.stages[regKey] || { valid: 0 };
+      const preg = document.createElement('div');
+      preg.className = 'pipe-reg';
+      const validCls = regData.valid ? 'valid' : 'invalid';
+      const opText   = regData.op || '?';
+      preg.innerHTML = `
+        <div class="pipe-reg-box ${validCls}">
+          <span class="pipe-reg-op">${regData.valid ? opText : '─'}</span>
+        </div>
+        <div class="pipe-reg-label">${regKey.replace('_', '/')}</div>`;
+      container.appendChild(preg);
+    }
+  });
+}
+
+function renderRegs(c, prev) {
+  const grid = document.getElementById('reg-grid');
+  grid.innerHTML = '';
+  const prevRegs = prev ? prev.regs : {};
+
+  for (let i = 0; i <= 31; i++) {
+    const key = `x${i}`;
+    const val = c.regs[key] || '0x00000000';
+    const prevVal = prevRegs[key] || '0x00000000';
+    const changed = val !== prevVal;
+    const nonzero = val !== '0x00000000';
+
+    const item = document.createElement('div');
+    item.className = `reg-item${changed ? ' changed' : (nonzero ? ' nonzero' : '')}`;
+    const shortVal = parseInt(val, 16).toString(16).padStart(8, '0');
+    item.innerHTML = `<span class="reg-name">x${String(i).padStart(2,'0')}</span><span class="reg-val">${val}</span>`;
+    grid.appendChild(item);
+  }
+}
+
+function renderInfo(c) {
+  const area = document.getElementById('info-area');
+  area.innerHTML = '';
+
+  // 内存访问卡
+  const memCard = document.createElement('div');
+  memCard.className = 'info-card';
+  memCard.innerHTML = '<div class="info-card-title">&#9654; Memory Events</div>';
+  if (c.mem_events && c.mem_events.length > 0) {
+    c.mem_events.forEach(ev => {
+      const row = document.createElement('div');
+      row.className = 'mem-event';
+      const typeCls = ev.type === 'READ' ? 'mem-type-read' : 'mem-type-write';
+      row.innerHTML = `<span class="${typeCls}">${ev.type}</span>
+        <span class="mem-addr">${ev.addr}</span>
+        <span style="color:var(--dim)">→</span>
+        <span class="mem-value">${ev.value}</span>`;
+      memCard.appendChild(row);
+    });
+  } else {
+    memCard.innerHTML += '<div class="mem-empty">no memory access</div>';
+  }
+  area.appendChild(memCard);
+
+  // 流水线寄存器详情卡
+  const regsCard = document.createElement('div');
+  regsCard.className = 'info-card';
+  regsCard.innerHTML = '<div class="info-card-title">&#9654; Pipeline Registers</div>';
+  const regKeys = ['IF_ID','ID_EX','EX_MEM','MEM_WB'];
+  regKeys.forEach(rk => {
+    const rd = c.stages[rk];
+    if (!rd) return;
+    const label = document.createElement('div');
+    label.style.cssText = 'color:var(--amber);font-size:10px;margin-top:4px;letter-spacing:1px;';
+    label.textContent = rk.replace('_','/');
+    regsCard.appendChild(label);
+    Object.entries(rd).forEach(([k, v]) => {
+      if (k === 'valid') return;
+      const row = document.createElement('div');
+      row.className = 'stage-field';
+      row.innerHTML = `<span class="field-key" style="font-size:10px;">${k}</span><span class="field-val" style="font-size:10px;">${v}</span>`;
+      regsCard.appendChild(row);
+    });
+  });
+  area.appendChild(regsCard);
+
+  // 周期统计速览
+  const statsCard = document.createElement('div');
+  statsCard.className = 'info-card';
+  statsCard.innerHTML = `<div class="info-card-title">&#9654; Cycle Info</div>
+    <div class="stage-field"><span class="field-key">pc</span><span class="field-val">${c.pc}</span></div>
+    <div class="stage-field"><span class="field-key">halted</span><span class="field-val" style="color:${c.halted ? 'var(--red)':'var(--green)'}">${c.halted}</span></div>`;
+  area.appendChild(statsCard);
+}
+
+// ── 播放控制 ─────────────────────────────────────────────────────────────────
+function goTo(idx) {
+  currentIdx = Math.max(0, Math.min(MAX - 1, idx));
+  renderCycle(currentIdx);
+  document.getElementById('btn-prev').disabled  = currentIdx === 0;
+  document.getElementById('btn-first').disabled = currentIdx === 0;
+  document.getElementById('btn-next').disabled  = currentIdx === MAX - 1;
+  document.getElementById('btn-last').disabled  = currentIdx === MAX - 1;
+}
+
+function startPlay() {
+  if (playTimer) return;
+  const btn = document.getElementById('btn-play');
+  btn.textContent = '⏸ PAUSE';
+  const speed = parseInt(document.getElementById('speed-sel').value);
+  playTimer = setInterval(() => {
+    if (currentIdx >= MAX - 1) {
+      stopPlay();
+      return;
+    }
+    goTo(currentIdx + 1);
+  }, speed);
+}
+
+function stopPlay() {
+  clearInterval(playTimer);
+  playTimer = null;
+  document.getElementById('btn-play').textContent = '▶ PLAY';
+}
+
+// ── 事件绑定 ─────────────────────────────────────────────────────────────────
+document.getElementById('btn-first').addEventListener('click', () => { stopPlay(); goTo(0); });
+document.getElementById('btn-prev').addEventListener('click',  () => { stopPlay(); goTo(currentIdx - 1); });
+document.getElementById('btn-next').addEventListener('click',  () => { stopPlay(); goTo(currentIdx + 1); });
+document.getElementById('btn-last').addEventListener('click',  () => { stopPlay(); goTo(MAX - 1); });
+document.getElementById('btn-play').addEventListener('click',  () => {
+  playTimer ? stopPlay() : startPlay();
+});
+slider.addEventListener('input', () => { stopPlay(); goTo(parseInt(slider.value) - 1); });
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowLeft')  { stopPlay(); goTo(currentIdx - 1); }
+  if (e.key === 'ArrowRight') { stopPlay(); goTo(currentIdx + 1); }
+  if (e.key === ' ')          { e.preventDefault(); playTimer ? stopPlay() : startPlay(); }
+  if (e.key === 'Home')       { stopPlay(); goTo(0); }
+  if (e.key === 'End')        { stopPlay(); goTo(MAX - 1); }
+});
+
+// ── 启动 ─────────────────────────────────────────────────────────────────────
+slider.max = MAX;
+headerMeta.textContent = `Total ${MAX} cycles · ${program.length} instructions`;
+initProgList();
+initStats();
+goTo(0);
+</script>
+</body>
+</html>

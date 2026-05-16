@@ -36,8 +36,8 @@ void StatisticsManager::onStructuralHazardStall() {
     this->statistics.structural_hazard_stalls++;
 }
 
-void StatisticsManager::onBranchFlush() {
-    this->statistics.branch_flushes++;
+void StatisticsManager::onBranchFlush(const u32 count) {
+    this->statistics.branch_flushes += count;
 }
 
 void StatisticsManager::onLoadUseHazard() {
@@ -98,6 +98,14 @@ void StatisticsManager::onBranchInstructions() {
 
 void StatisticsManager::onJumpInstructions() {
     this->statistics.jump_instructions++;
+}
+
+void StatisticsManager::onCacheMiss() {
+    this->statistics.cache_miss++;
+}
+
+void StatisticsManager::onCacheHits() {
+    this->statistics.cache_hits++;
 }
 
 const Statistics& StatisticsManager::snapshot() const {

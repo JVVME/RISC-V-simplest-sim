@@ -11,6 +11,7 @@
 
 enum class ALUOp;
 struct ControlSignals;
+struct PipelineControlSignals;
 struct IF_ID;
 struct ID_EX;
 struct EX_MEM;
@@ -34,6 +35,18 @@ struct ControlSignals {
     bool alu_src = false;
 
     ALUOp alu_op = ALUOp::NOP;
+};
+
+struct PipelineControlSignals {
+    bool stall_if = false;
+
+    bool stall_id = false;
+
+    bool stall_ex = false;
+
+    bool stall_mem = false;
+
+    bool stall_wb = false;
 };
 
 struct IF_ID {

@@ -8,9 +8,6 @@
 #include <cassert>
 #include <iostream>
 
-CPU::CPU() {
-    reset();
-}
 
 void CPU::reset() {
     current_pc = 0;
@@ -42,10 +39,6 @@ void CPU::tick() {
         return;
     }
 
-    current_pc = next_pc;
-    current_pipeline = next_pipeline;
-    current_register = next_register;
-    memory.setDebugContext(cycles + 1, current_pc);
 
     stat.onCycle();
     if (!halted) {
@@ -93,7 +86,6 @@ void CPU::run() {
     }
     print_final_registers(cycles, current_register);
     print_statistics(stat);
-    memory.printWatchpointValues(std::cout);
 }
 
 void CPU::setProgram(std::vector<Instruction>& program, u32 init_pc) {
@@ -108,34 +100,6 @@ void CPU::setProgram(std::vector<Instruction>& program, u32 init_pc) {
     this->halted = false;
     this->cycles = 0;
     stat.reset();
-}
-
-void CPU::setTrace(bool enable) {
-    trace_enabled = enable;
-}
-
-void CPU::setMemoryTrace(bool enable) {
-    memory.setTrace(enable);
-}
-
-void CPU::addMemoryWatchpoint(u32 addr) {
-    memory.addWatchpoint(addr);
-}
-
-void CPU::clearMemoryWatchpoints() {
-    memory.clearWatchpoints();
-}
-
-void CPU::clearMemoryAccessLog() {
-    memory.clearAccessLog();
-}
-
-void CPU::printMemoryAccessLog(const std::size_t max_entries) const {
-    memory.printAccessLog(std::cout, max_entries);
-}
-
-void CPU::dumpMemory(u32 start, u32 len) const {
-    memory.dumpBytes(start, len, std::cout);
 }
 
 void CPU::fetch_stage() {
@@ -171,79 +135,11 @@ void CPU::decode_stage() {
     }
     const Instruction& inst = current_pipeline.if_id.inst;
 
-    auto uses_rs1 = [](RISCV32I op) -> bool {
-        switch (op) {
-            case RISCV32I::ADD: case RISCV32I::SUB: case RISCV32I::AND:
-            case RISCV32I::OR:  case RISCV32I::XOR:
-            case RISCV32I::ADDI: case RISCV32I::ANDI: case RISCV32I::ORI:
-            case RISCV32I::LW: case RISCV32I::SW:
-            case RISCV32I::BEQ: case RISCV32I::BNE:
-            case RISCV32I::JALR:
-                return true;
-            default:
-                return false;
-        }
-    };
 
-    auto uses_rs2 = [](RISCV32I op) -> bool {
-        switch (op) {
-            case RISCV32I::ADD: case RISCV32I::SUB: case RISCV32I::AND:
-            case RISCV32I::OR:  case RISCV32I::XOR:
-            case RISCV32I::SW:
-            case RISCV32I::BEQ: case RISCV32I::BNE:
-                return true;
-            default:
-                return false;
-        }
-    };
+    const bool load_use_hazard = should_stall_for_load_use(inst);
 
-    auto stage_writes = [](bool valid, const ControlSignals& ctrl, u8 rd) -> bool {
-        return valid && ctrl.reg_write && rd != 0;
-    };
-
-    auto has_conflict = [&](u8 src) -> bool {
-        if (src == 0) return false;
-
-        if (stage_writes(current_pipeline.id_ex.valid,
-                         current_pipeline.id_ex.ctrl,
-                         current_pipeline.id_ex.inst.rd) &&
-            current_pipeline.id_ex.inst.rd == src) {
-            return true;
-            }
-
-        if (stage_writes(current_pipeline.ex_mem.valid,
-                         current_pipeline.ex_mem.ctrl,
-                         current_pipeline.ex_mem.rd) &&
-            current_pipeline.ex_mem.rd == src) {
-            return true;
-            }
-
-        if (stage_writes(current_pipeline.mem_wb.valid,
-                         current_pipeline.mem_wb.ctrl,
-                         current_pipeline.mem_wb.rd) &&
-            current_pipeline.mem_wb.rd == src) {
-            return true;
-            }
-
-        return false;
-    };
-
-    const bool rs1_conflict = uses_rs1(inst.op) && has_conflict(inst.rs1);
-    const bool rs2_conflict = uses_rs2(inst.op) && has_conflict(inst.rs2);
-    const bool stall = rs1_conflict || rs2_conflict;
-
-    const bool load_use_hazard =
-        current_pipeline.id_ex.valid &&
-        current_pipeline.id_ex.ctrl.mem_read &&
-        current_pipeline.id_ex.inst.rd != 0 &&
-        ((uses_rs1(inst.op) && current_pipeline.id_ex.inst.rd == inst.rs1) ||
-         (uses_rs2(inst.op) && current_pipeline.id_ex.inst.rd == inst.rs2));
-
-    if (stall) {
-        stat.onDataHazardStall();
-        if (load_use_hazard) {
-            stat.onLoadUseHazard();
-        }
+    if (load_use_hazard) {
+        stat.onLoadUseHazard();
         // 插入 bubble，冻结 IF/PC
         next_pipeline.id_ex = ID_EX{};
         next_pipeline.if_id = current_pipeline.if_id;
@@ -386,10 +282,27 @@ void CPU::decode_stage() {
             break;
     }
 
+    u32 rs1_value = current_register.read(inst.rs1);
+    u32 rs2_value = current_register.read(inst.rs2);
+
+    // ★ 新增：WB → ID 前递
+    // WB 阶段写的是 next_register，在本周期 decode 读 current_register 时不可见。
+    // 必须在这里手动前递，否则 Cycle N 的 WB 结果到 Cycle N+1 才能被 decode 看到，
+    // 但 EX 阶段的 MEM_WB 转发在那时已经指向下一条指令了。
+    if (can_forward_from_mem_wb(current_pipeline.mem_wb)) {
+        const MEM_WB& wb = current_pipeline.mem_wb;
+        if (uses_rs1(inst.op) && inst.rs1 != 0 && wb.rd == inst.rs1) {
+            rs1_value = wb.writeback_value;
+        }
+        if (uses_rs2(inst.op) && inst.rs2 != 0 && wb.rd == inst.rs2) {
+            rs2_value = wb.writeback_value;
+        }
+    }
+
     next_pipeline.id_ex = ID_EX{
         .valid = true,
-        .rs1_value = current_register.read(inst.rs1),
-        .rs2_value = current_register.read(inst.rs2),
+        .rs1_value = rs1_value,
+        .rs2_value = rs2_value,
         .imm = static_cast<u32>(inst.imm),
         .inst = inst,
         .ctrl = control_signals,
@@ -406,8 +319,12 @@ void CPU::execute_stage() {
     const Instruction& inst = id_ex.inst;
     const ControlSignals& ctrl = id_ex.ctrl;
 
-    u32 op_a = id_ex.rs1_value;
-    u32 op_b = ctrl.alu_src ? id_ex.imm : id_ex.rs2_value;
+    auto forward = compute_forwarding(id_ex);
+    u32 forwarded_rs1 = resolve_forwarded_operand(forward.rs1, id_ex.rs1_value);
+    u32 forwarded_rs2 = resolve_forwarded_operand(forward.rs2, id_ex.rs2_value);
+
+    u32 op_a = forwarded_rs1;
+    u32 op_b = ctrl.alu_src ? id_ex.imm : forwarded_rs2;
     u32 alu_result = ALU(ctrl.alu_op, op_a, op_b);
 
     bool take_branch = false;
@@ -415,10 +332,10 @@ void CPU::execute_stage() {
         stat.onBranches();
         switch (inst.op) {
             case RISCV32I::BEQ:
-                take_branch = (id_ex.rs1_value == id_ex.rs2_value);
+                take_branch = (forwarded_rs1 == forwarded_rs2);
                 break;
             case RISCV32I::BNE:
-                take_branch = (id_ex.rs1_value != id_ex.rs2_value);
+                take_branch = (forwarded_rs1 != forwarded_rs2);
                 break;
             default:
                 break;
@@ -449,7 +366,7 @@ void CPU::execute_stage() {
             target_pc = inst.pc + id_ex.imm;
         }
         else if (inst.op == RISCV32I::JALR) {
-            target_pc = (id_ex.rs1_value + id_ex.imm) & ~1u;
+            target_pc = (forwarded_rs1 + id_ex.imm) & ~1u;
         }
     }
 
@@ -462,7 +379,7 @@ void CPU::execute_stage() {
     EX_MEM out{};
     out.valid = true;
     out.alu_result = ex_result;
-    out.rs2_value = id_ex.rs2_value; // SW 在 MEM 阶段会用到
+    out.rs2_value = forwarded_rs2; // SW 在 MEM 阶段会用到
     out.rd = inst.rd;
     out.inst = inst;
     out.ctrl = ctrl;
@@ -476,7 +393,7 @@ void CPU::execute_stage() {
         if (next_pipeline.id_ex.valid) {
             stat.onControlHazardStall();
         }
-        stat.onBranchFlush();
+        stat.onBranchFlush(2);
         halted = false;
         next_pc = target_pc;
         next_pipeline.if_id = IF_ID{};
@@ -500,10 +417,10 @@ void CPU::memory_stage() {
     if (ctrl.mem_read) {
         stat.onLoads();
         const u32 addr = ex_mem.alu_result;
-        const u32 b0 = static_cast<u32>(memory.load_byte(addr));
-        const u32 b1 = static_cast<u32>(memory.load_byte(addr + 1));
-        const u32 b2 = static_cast<u32>(memory.load_byte(addr + 2));
-        const u32 b3 = static_cast<u32>(memory.load_byte(addr + 3));
+        const u32 b0 = static_cast<u32>(memory->load_byte(addr));
+        const u32 b1 = static_cast<u32>(memory->load_byte(addr + 1));
+        const u32 b2 = static_cast<u32>(memory->load_byte(addr + 2));
+        const u32 b3 = static_cast<u32>(memory->load_byte(addr + 3));
         writeback_value = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
     }
 
@@ -512,10 +429,10 @@ void CPU::memory_stage() {
         stat.onStores();
         const u32 addr = ex_mem.alu_result;
         const u32 data = ex_mem.rs2_value;
-        memory.store_byte(addr,     static_cast<u8>( data        & 0xFF));
-        memory.store_byte(addr + 1, static_cast<u8>((data >> 8)  & 0xFF));
-        memory.store_byte(addr + 2, static_cast<u8>((data >> 16) & 0xFF));
-        memory.store_byte(addr + 3, static_cast<u8>((data >> 24) & 0xFF));
+        memory->store_byte(addr,     static_cast<u8>( data        & 0xFF));
+        memory->store_byte(addr + 1, static_cast<u8>((data >> 8)  & 0xFF));
+        memory->store_byte(addr + 2, static_cast<u8>((data >> 16) & 0xFF));
+        memory->store_byte(addr + 3, static_cast<u8>((data >> 24) & 0xFF));
     }
 
     MEM_WB out{};
@@ -583,4 +500,120 @@ void CPU::commit() {
     current_pc = next_pc;
     current_pipeline = next_pipeline;
     current_register = next_register;
+}
+
+bool CPU::uses_rs1(RISCV32I op) const {
+    switch (op) {
+        case RISCV32I::ADD: case RISCV32I::SUB: case RISCV32I::AND:
+        case RISCV32I::OR:  case RISCV32I::XOR:
+        case RISCV32I::ADDI: case RISCV32I::ANDI: case RISCV32I::ORI:
+        case RISCV32I::LW: case RISCV32I::SW:
+        case RISCV32I::BEQ: case RISCV32I::BNE:
+        case RISCV32I::JALR:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool CPU::uses_rs2(RISCV32I op) const {
+    switch (op) {
+        case RISCV32I::ADD: case RISCV32I::SUB: case RISCV32I::AND:
+        case RISCV32I::OR:  case RISCV32I::XOR:
+        case RISCV32I::SW:
+        case RISCV32I::BEQ: case RISCV32I::BNE:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool CPU::writes_register(bool valid, const ControlSignals &ctrl, u8 rd) const {
+    return valid && ctrl.reg_write && rd != 0;
+}
+
+bool CPU::can_forward_from_ex_mem(const EX_MEM &ex_mem) const {
+    if (!ex_mem.valid) {
+        return false;
+    }
+
+    if (!ex_mem.ctrl.reg_write) {
+        return false;
+    }
+
+    if (ex_mem.rd == 0) {
+        return false;
+    }
+
+    if (ex_mem.ctrl.mem_read) {
+        return false;
+    }
+
+    return true;
+
+}
+
+bool CPU::can_forward_from_mem_wb(const MEM_WB &mem_wb) const {
+    if (!mem_wb.valid) {
+        return false;
+    }
+
+    if (!mem_wb.ctrl.reg_write) {
+        return false;
+    }
+
+    if (mem_wb.rd == 0) {
+        return false;
+    }
+
+    return true;
+}
+
+bool CPU::should_stall_for_load_use(const Instruction &inst) const {
+
+    return current_pipeline.id_ex.valid &&
+        current_pipeline.id_ex.ctrl.mem_read &&
+        current_pipeline.id_ex.inst.rd != 0 &&
+        ((uses_rs1(inst.op) && current_pipeline.id_ex.inst.rd == inst.rs1) ||
+         (uses_rs2(inst.op) && current_pipeline.id_ex.inst.rd == inst.rs2));
+}
+
+CPU::ForwardSource CPU::choose_forward_source(u8 src_reg) const {
+    if (src_reg == 0) {
+        return ForwardSource::NONE;
+    }
+
+    if (can_forward_from_ex_mem(current_pipeline.ex_mem) && current_pipeline.ex_mem.rd == src_reg) {
+        return ForwardSource::EX_MEM;
+    }
+
+    if (can_forward_from_mem_wb(current_pipeline.mem_wb) &&
+        current_pipeline.mem_wb.rd == src_reg) {
+
+        return ForwardSource::MEM_WB;
+    }
+
+    return ForwardSource::NONE;
+}
+
+CPU::ForwardDecision CPU::compute_forwarding(const ID_EX &id_ex) const {
+    ForwardDecision decision;
+
+    decision.rs1 = choose_forward_source(id_ex.inst.rs1);
+    decision.rs2 = choose_forward_source(id_ex.inst.rs2);
+
+    return decision;
+}
+
+u32 CPU::resolve_forwarded_operand(ForwardSource source, u32 original_value) const {
+
+    switch (source) {
+        case ForwardSource::EX_MEM:
+            return current_pipeline.ex_mem.alu_result;
+        case ForwardSource::MEM_WB:
+            return current_pipeline.mem_wb.writeback_value;
+        case ForwardSource::NONE:
+        default:
+            return original_value;
+    }
 }
